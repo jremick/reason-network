@@ -5,6 +5,7 @@ mod client;
 mod codex;
 mod config;
 mod daemon;
+mod debuglog;
 mod doing;
 mod files;
 mod git;
@@ -317,7 +318,11 @@ async fn main() -> Result<()> {
     let cmd = Cli::parse().cmd;
     paths::migrate();
     match cmd {
-        Some(Cmd::Daemon { service }) => daemon::run(service).await,
+        Some(Cmd::Daemon { service }) => {
+            let r = daemon::run(service).await;
+            debuglog::flush();
+            r
+        }
         Some(Cmd::Mcp) => mcp::run().await,
         Some(Cmd::Bridge) => bridge::run().await,
         // Blocks this (the main) thread with AppKit's event loop; its daemon calls run on the runtime's workers.

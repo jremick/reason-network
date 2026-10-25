@@ -54,6 +54,13 @@ pub async fn run(service: bool) -> Result<()> {
     };
     let mut listener = ipc::Listener::bind()?;
     let daemon = Arc::new(Daemon::open()?);
+    if daemon.cfg.debug_log {
+        daemon.known_to_debug_log(daemon.team_state().as_ref());
+        match crate::debuglog::start() {
+            Ok(()) => log(&format!("debug log on: {}", crate::debuglog::path().display())),
+            Err(e) => log(&format!("debug log not started: {e}")),
+        }
+    }
     log(&format!("listening on {} as {}@{}", paths::socket().display(), daemon.person, daemon.machine));
     if daemon.team_state().is_some()
         && let Err(e) = daemon.start_net().await
@@ -390,6 +397,7 @@ impl Daemon {
             if crate::setup::service_installed() {
                 let _ = crate::client::start_daemon(true);
             }
+            crate::debuglog::flush();
             std::process::exit(0);
         });
     }
