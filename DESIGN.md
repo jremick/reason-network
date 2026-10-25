@@ -259,9 +259,13 @@ session connection also receives pushed `deliver` events for its sessions.
 **Session registration**, by priority:
 1. Per-call `_meta`: Codex `sessionId` (the root thread, same id its hooks see), opencode V2 `ai.opencode/sessionID`.
 2. Env: `REASON_NETWORK_SESSION` (set by our pi extension), else the agent's own: `CLAUDE_CODE_SESSION_ID` (Claude),
-   `CODEX_THREAD_ID` (Codex), `OPENCODE_SESSION_ID` (opencode), `GEMINI_SESSION_ID` (Gemini), `COPILOT_AGENT_SESSION_ID`
-   (Copilot), `GROK_SESSION_ID` (Grok).
-3. Hook stdin `session_id` (`SessionStart`), correlated to the MCP process by agent PID ancestry.
+   `CODEX_THREAD_ID` (Codex), `OPENCODE_SESSION_ID` (opencode), `COPILOT_AGENT_SESSION_ID` (Copilot),
+   `GROK_SESSION_ID` (Grok).
+3. Hook stdin `session_id` (`SessionStart`), for Gemini, which gives its MCP servers no id (`GEMINI_SESSION_ID` is in its
+   hooks' env only): the one session the hooks of the MCP server's agent process (its parent, past a shell) registered,
+   asked on each call so `/clear` is followed. At start the MCP server waits up to 20 s for those hooks; registered by
+   process after all, it moves to their session once they come. A new conversation's `SessionStart` ends the one
+   before in the same process, and `SessionEnd` ends one though its MCP server is still connected.
 4. Fallback: one session per MCP process.
 
 The key is `<agent>:<id>`, and it is what a name is kept for (above). Where each agent's id comes from:
@@ -273,7 +277,7 @@ The key is `<agent>:<id>`, and it is what a name is kept for (above). Where each
 | opencode | session id | `_meta["ai.opencode/sessionID"]`, `OPENCODE_SESSION_ID`, the plugin's `--session` |
 | pi | session id | the extension's `REASON_NETWORK_SESSION` and `--session` |
 | Cursor | conversation id | hooks' `conversation_id` (its shared MCP server takes the session its hooks registered) |
-| Gemini CLI | session id | `GEMINI_SESSION_ID`, hooks' `session_id` |
+| Gemini CLI | session id | hooks' `session_id` (its MCP server takes the session its process's hooks registered) |
 | Copilot CLI | session id | `COPILOT_AGENT_SESSION_ID`, hooks' `sessionId` |
 | Grok CLI | session id | `GROK_SESSION_ID`, hooks' `session_id` |
 | Reason | session id | `reason session list` |
