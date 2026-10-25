@@ -144,6 +144,50 @@ pub fn find_bin(name: &str) -> Option<PathBuf> {
         .find(|p| executable(p))
 }
 
+/// How to run `name`: the program, and the arguments that go before the caller's. On Windows the `<name>.cmd` npm
+/// (or pnpm) installs runs through cmd.exe, which can't be handed an argument with a line break (Rust refuses one rather
+/// than let cmd.exe cut it short), and a message has them: its Node script is run with node instead, when the shim
+/// names one.
+pub fn command_for(name: &str) -> Option<(PathBuf, Vec<PathBuf>)> {
+    let bin = find_bin(name)?;
+    #[cfg(windows)]
+    if bin.extension().is_some_and(|e| e.eq_ignore_ascii_case("cmd"))
+        && let Some(dir) = bin.parent()
+        && let Some(run) = std::fs::read_to_string(&bin).ok().and_then(|shim| node_shim(&shim, dir))
+    {
+        return Some(run);
+    }
+    Some((bin, vec![]))
+}
+
+/// Node and the script an npm or pnpm `.cmd` shim in `dir` runs (`"%dp0%\\node_modules\\…\\codex.js" %*`): the node
+/// beside the shim if there is one, as the shim itself prefers, else the one on `PATH`. Only when the shim runs that
+/// script with node and nothing else in between (no flags, not bun): any other shim is left to run as it is.
+#[cfg(any(windows, test))]
+fn node_shim(shim: &str, dir: &Path) -> Option<(PathBuf, Vec<PathBuf>)> {
+    let lower = shim.to_ascii_lowercase();
+    let script = shim.match_indices('"').find_map(|(at, _)| {
+        let part = shim[at + 1..].split('"').next()?;
+        let rest = part.strip_prefix("%dp0%\\").or_else(|| part.strip_prefix("%~dp0\\"))?;
+        let ext = rest.to_ascii_lowercase();
+        if ![".js", ".cjs", ".mjs"].iter().any(|e| ext.ends_with(e)) {
+            return None;
+        }
+        // What runs it: npm's `"%_prog%"` (node beside the shim, else `node`), node.exe, or plain `node`.
+        let before = lower[..at].rsplit(['\n', '&', '(']).next()?.trim();
+        let by_node = (before.ends_with("\"%_prog%\"") && lower.contains("_prog=node\""))
+            || before.ends_with("\\node.exe\"")
+            || before.trim_start_matches('@') == "node";
+        by_node.then(|| rest.split(['\\', '/']).fold(dir.to_path_buf(), |p, c| p.join(c)))
+    })?;
+    if !script.is_file() {
+        return None;
+    }
+    let beside = dir.join("node.exe");
+    let node = if beside.is_file() { beside } else { find_bin("node")? };
+    Some((node, vec![script]))
+}
+
 #[cfg(unix)]
 fn executable(p: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
@@ -477,5 +521,68 @@ mod tests {
         let git = GitInfo { root: Some("/Users/alex/src/API".into()), ..Default::default() };
         assert_eq!(default_name(CLAUDE_CODE, "/Users/alex/src/API/web", &git), "api-claude");
         assert_eq!(default_name("codex", "/tmp/My Thing", &GitInfo::default()), "my-thing-codex");
+    }
+
+    #[test]
+    fn an_npm_shim_is_run_as_node_and_its_script() {
+        let d = std::env::temp_dir().join(format!("reason-network-shim-{}", ulid::Ulid::generate()));
+        let script = d.join("node_modules").join("@openai").join("codex").join("bin").join("codex.js");
+        std::fs::create_dir_all(script.parent().unwrap()).unwrap();
+        std::fs::write(&script, "").unwrap();
+        std::fs::write(d.as_path().join("node.exe"), "").unwrap();
+        // What npm 10/11's cmd-shim writes for Codex.
+        let npm = "@ECHO off\r\nGOTO start\r\n:find_dp0\r\nSET dp0=%~dp0\r\nEXIT /b\r\n:start\r\nSETLOCAL\r\n\
+                   CALL :find_dp0\r\n\r\nIF EXIST \"%dp0%\\node.exe\" (\r\n  SET \"_prog=%dp0%\\node.exe\"\r\n) ELSE (\r\n  \
+                   SET \"_prog=node\"\r\n  SET PATHEXT=%PATHEXT:;.JS;=;%\r\n)\r\n\r\nendLocal & goto #_undefined_# 2>NUL || \
+                   title %COMSPEC% & \"%_prog%\"  \"%dp0%\\node_modules\\@openai\\codex\\bin\\codex.js\" %*\r\n";
+        assert_eq!(node_shim(npm, d.as_path()), Some((d.as_path().join("node.exe"), vec![script.clone()])));
+        // pnpm's points up out of its own folder, with `%~dp0`.
+        let sub = d.as_path().join("bin");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(sub.join("node.exe"), "").unwrap();
+        let pnpm = "@SETLOCAL\r\n\"%~dp0\\node.exe\" \"%~dp0\\..\\node_modules\\@openai\\codex\\bin\\codex.js\" %*\r\n";
+        let (node, args) = node_shim(pnpm, &sub).unwrap();
+        assert_eq!(node, sub.join("node.exe"));
+        assert_eq!(std::fs::canonicalize(&args[0]).unwrap(), std::fs::canonicalize(&script).unwrap());
+        // A shim that runs no Node script, or one that isn't there, is left to run as it is.
+        assert_eq!(node_shim("@echo off\r\n\"%dp0%\\codex.exe\" %*\r\n", d.as_path()), None);
+        assert_eq!(node_shim(&npm.replace("codex.js", "gone.js"), d.as_path()), None);
+        // Plain `node` (pnpm's ELSE branch), and only node: not bun, and not node with flags we'd drop.
+        let plain = "@SETLOCAL\r\nnode  \"%~dp0\\..\\node_modules\\@openai\\codex\\bin\\codex.js\" %*\r\n";
+        assert!(node_shim(plain, &sub).is_some());
+        assert_eq!(
+            node_shim(&npm.replace("_prog=node\"", "_prog=bun\"").replace("node.exe", "bun.exe"), d.as_path()),
+            None
+        );
+        let flags = npm.replace("\"%_prog%\"  \"%dp0%", "\"%_prog%\" --no-warnings \"%dp0%");
+        assert_eq!(node_shim(&flags, d.as_path()), None);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// The point of it, on Windows itself: a message with line breaks and cmd.exe's special characters reaches the
+    /// script npm installed, as it was sent.
+    #[cfg(windows)]
+    #[test]
+    fn a_message_with_line_breaks_reaches_an_npm_installed_script() {
+        let Some(node) = find_bin("node") else { return };
+        let d = std::env::temp_dir().join(format!("reason-network-shim-run-{}", ulid::Ulid::generate()));
+        let bin = d.join("node_modules").join("x").join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let out = d.join("args.json");
+        std::fs::write(
+            bin.join("x.js"),
+            format!("require('fs').writeFileSync({:?}, JSON.stringify(process.argv.slice(2)))", out.to_str().unwrap()),
+        )
+        .unwrap();
+        let shim =
+            "@ECHO off\r\nSETLOCAL\r\nSET \"_prog=node\"\r\n\"%_prog%\"  \"%dp0%\\node_modules\\x\\bin\\x.js\" %*\r\n";
+        let (prog, pre) = node_shim(shim, &d).unwrap();
+        assert_eq!(prog, node);
+        let text = "<reason-message from=\"a\">\r\nline & two %PATH% ^ | < > \"quoted\"\n</reason-message>";
+        let status = std::process::Command::new(prog).args(&pre).args(["queue", "--message", text]).status().unwrap();
+        assert!(status.success());
+        let got: Vec<String> = serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+        assert_eq!(got, ["queue", "--message", text]);
+        let _ = std::fs::remove_dir_all(&d);
     }
 }
