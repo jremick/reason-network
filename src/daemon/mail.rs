@@ -2148,14 +2148,17 @@ mod tests {
     async fn held_mail_reaches_the_replacement_only_after_approval() {
         let (d, bob, address) = with_inbound_policy(Policy::Hold);
         let name = gone(&d, "codex:1", 0);
+        assert!(d.inner.lock().unwrap().store.session_by_name(&name).unwrap().unwrap().kept());
         let msg = from_bob(&address, "for review".into(), vec![]);
         let id = msg.id.clone();
         assert_eq!(d.receive(bob.public(), msg).unwrap().0, "held");
 
         let key = "gemini:new";
         d.register(Some(2), gemini(key), crate::git::GitInfo::default()).unwrap();
-        let r = d.set_status(key, None, Some(name), Rename::Explicit).unwrap();
-        assert_eq!((r.address, r.unread), (address, 0));
+        let req = Request::SetStatus { key: key.into(), doing: None, name: Some(name), reclaim: true };
+        let reply = d.handle(2, req).await.unwrap();
+        assert_eq!(reply["address"], address);
+        assert_eq!(reply["unread"], 0);
         assert!(d.inbox(key.into(), 0, false).await.unwrap().messages.is_empty());
         assert_eq!(d.settle(std::slice::from_ref(&id), true).unwrap(), 1);
         let inbox = d.inbox(key.into(), 0, false).await.unwrap();

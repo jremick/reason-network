@@ -203,6 +203,10 @@ try:
     gemini("session-start", "g2")
     out = cli("one", "status", "--name", "proj-gemini", REASON_NETWORK_AGENT="gemini", GEMINI_SESSION_ID="g2")
     check("a replacement takes the offline hook-only session's name", "You are lars/proj-gemini." in out, out)
+    back = gemini("session-start", "g1")
+    out = cli("one", "status", REASON_NETWORK_AGENT="gemini", GEMINI_SESSION_ID="g1")
+    check("the old owner resumes under a free name without seeing the waiting mail",
+          "You are lars/proj-gemini-2." in out and "handoff from hook-only g1" not in back, (out, back))
     got = gemini("stop", "g2")
     check("its hook receives the mail queued for the old owner", "handoff from hook-only g1" in got, got)
 
