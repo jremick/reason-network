@@ -2,7 +2,7 @@ name: ci
 
 on:
   push:
-    branches: [main]
+    branches: [codex/ci-165-8d2ff4e]
   pull_request:
 
 permissions:
@@ -25,3 +25,5 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --all-targets --locked -- -D warnings
       - run: cargo test --locked
+      - if: runner.os == 'Windows'
+        run: powershell -NoProfile -File tests/install_windows.ps1
