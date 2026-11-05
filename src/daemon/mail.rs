@@ -1452,6 +1452,8 @@ mod tests {
     async fn codex_queue_in_flight() -> (Arc<Daemon>, String, Vec<String>) {
         let d = Arc::new(super::super::test_daemon(crate::config::Config::default()));
         d.hook(codex_hook("t1", "start", None)).await.unwrap();
+        // The MCP connection makes this a reachable conversation even on runners without the Codex CLI.
+        d.register(Some(1), codex("codex:t1"), crate::git::GitInfo::default()).unwrap();
         let name = gone(&d, "codex:t1", HOUR);
         let to = d.addr(&name);
         let mut msg = Message {
@@ -1470,6 +1472,7 @@ mod tests {
             files: Vec::new(),
         };
         let mut g = d.inner.lock().unwrap();
+        assert!(g.store.session_by_name(&name).unwrap().unwrap().kept());
         g.store.insert(&mut msg, false).unwrap();
         g.in_flight.insert(msg.id.clone(), Instant::now());
         drop(g);
