@@ -2108,7 +2108,15 @@ mod tests {
 
     /// A daemon for alex, with bob's machine on the team and a session here. Returns it, bob's key and the session.
     fn with_teammate() -> (Arc<Daemon>, SecretKey, String) {
-        let cfg = crate::config::Config { person: Some("alex".into()), ..Default::default() };
+        with_inbound_policy(Policy::Accept)
+    }
+
+    fn with_inbound_policy(policy: Policy) -> (Arc<Daemon>, SecretKey, String) {
+        let cfg = crate::config::Config {
+            person: Some("alex".into()),
+            inbound: crate::config::Inbound { default: policy, ..Default::default() },
+            ..Default::default()
+        };
         let d = Arc::new(super::super::test_daemon(cfg));
         let bob = SecretKey::generate();
         let mut team = TeamState::found("acme", &d.person, &d.machine, &d.key);
@@ -2134,6 +2142,24 @@ mod tests {
             approval: None,
             files,
         }
+    }
+
+    #[tokio::test]
+    async fn held_mail_reaches_the_replacement_only_after_approval() {
+        let (d, bob, address) = with_inbound_policy(Policy::Hold);
+        let name = gone(&d, "codex:1", 0);
+        let msg = from_bob(&address, "for review".into(), vec![]);
+        let id = msg.id.clone();
+        assert_eq!(d.receive(bob.public(), msg).unwrap().0, "held");
+
+        let key = "gemini:new";
+        d.register(Some(2), gemini(key), crate::git::GitInfo::default()).unwrap();
+        let r = d.set_status(key, None, Some(name), Rename::Explicit).unwrap();
+        assert_eq!((r.address, r.unread), (address, 0));
+        assert!(d.inbox(key.into(), 0, false).await.unwrap().messages.is_empty());
+        assert_eq!(d.settle(std::slice::from_ref(&id), true).unwrap(), 1);
+        let inbox = d.inbox(key.into(), 0, false).await.unwrap();
+        assert_eq!(inbox.messages.into_iter().map(|m| m.id).collect::<Vec<_>>(), [id]);
     }
 
     /// Takes `msg` from bob's machine: its error, if refused, after checking nothing of it was kept.
