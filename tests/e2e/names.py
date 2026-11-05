@@ -137,7 +137,11 @@ try:
     check("…a new conversation after the restart gets the next free name", you_are(c) == "lars/proj-claude-3", c)
     check("…and none of the other's mail", "bug report" not in c, c)
     out = cli("one", "status", "--name", "proj-claude", CLAUDECODE="1", CLAUDE_CODE_SESSION_ID="conv-c")
-    check("an explicit rename waits for an unseen owner after daemon restart", "restart" in out and "try again" in out, out)
+    wait = re.search(r"try again in about (\d+) minutes?\.", out)
+    check("an explicit rename explains how soon to retry or recover the unseen name",
+          "'proj-claude' has not reconnected since the daemon restart" in out
+          and "Resume the original conversation" in out and "end it and retry" in out
+          and wait is not None and 1 <= int(wait[1]) <= 360, out)
     back = claude("one", "session-start", "conv-a")
     check("the first conversation comes back as itself", name_of("one", "conv-a") == "lars/proj-claude", name_of("one", "conv-a"))
     check("…and its mail reaches it", "bug report for conversation A" in back, back)

@@ -308,10 +308,13 @@ impl Daemon {
                         util::ago(r.last_seen, now)
                     );
                 }
-                if !self.forgetting() && !g.seen_since_start.contains(&r.key) {
+                let remaining = self.startup_grace_ends.saturating_duration_since(Instant::now());
+                if !remaining.is_zero() && !g.seen_since_start.contains(&r.key) {
+                    let minutes = remaining.as_nanos().div_ceil(Duration::from_secs(60).as_nanos());
+                    let unit = if minutes == 1 { "minute" } else { "minutes" };
                     bail!(
-                        "'{n}' has not reconnected since the daemon restart; try again after it reconnects and leaves \
-                         or the six-hour startup grace ends"
+                        "'{n}' has not reconnected since the daemon restart. Resume the original conversation \
+                         so it reconnects, then end it and retry. Otherwise, try again in about {minutes} {unit}."
                     );
                 }
                 reclaim = true;
@@ -1102,13 +1105,17 @@ mod tests {
         restart(&d);
         join(&d, claude("b"));
         let rename = |d: &Daemon| d.set_status("claude-code:b", None, Some("api-claude".into()), Rename::Explicit);
-        assert!(rename(&d).unwrap_err().to_string().contains("restart"));
+        d.startup_grace_ends = Instant::now() + Duration::from_secs(17 * 60 + 30);
+        let error = rename(&d).unwrap_err().to_string();
+        assert!(error.contains("try again in about 18 minutes"), "{error}");
         join(&d, claude("a"));
         assert!(rename(&d).unwrap_err().to_string().contains("live"));
         leave(&d, "claude-code:a", 0);
         restart(&d);
         join(&d, claude("b"));
-        assert!(rename(&d).unwrap_err().to_string().contains("restart"));
+        d.startup_grace_ends = Instant::now() + Duration::from_secs(30);
+        let error = rename(&d).unwrap_err().to_string();
+        assert!(error.ends_with("try again in about 1 minute."), "{error}");
         settled(&mut d);
         assert_eq!(rename(&d).unwrap().name, "api-claude");
     }
