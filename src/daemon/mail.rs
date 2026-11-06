@@ -1924,6 +1924,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn reclaim_pushes_waiting_mail_to_the_replacements_connection() {
+        let d = Arc::new(super::super::test_daemon(crate::config::Config::default()));
+        d.register(Some(1), codex("codex:sender"), crate::git::GitInfo::default()).unwrap();
+        let old = SessionReg { name: Some("handoff".into()), ..gemini("gemini:old") };
+        let address = d.register(Some(2), old, crate::git::GitInfo::default()).unwrap().address;
+        d.drop_conn(2);
+        let sent =
+            d.send("codex:sender".into(), &address, "waiting message", None, true, false, None, vec![]).await.unwrap();
+        assert_eq!(sent.recipients[0].state, "queued");
+        let fyi = d
+            .send("codex:sender".into(), &address, "for a natural pause", None, false, false, None, vec![])
+            .await
+            .unwrap();
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        d.inner.lock().unwrap().conns.insert(7, tx);
+        let key = "claude-code:new";
+        let reg = SessionReg { agent: agent::CLAUDE_CODE.into(), tier: Tier::Push, ..codex(key) };
+        d.register(Some(7), reg, crate::git::GitInfo::default()).unwrap();
+        let rename =
+            || Request::SetStatus { key: key.into(), doing: None, name: Some("handoff".into()), reclaim: true };
+        // The CLI uses a different connection from the session's MCP server.
+        let reply = d.handle(9, rename()).await.unwrap();
+        assert_eq!(reply["address"], address);
+        assert_eq!(reply["unread"], 2);
+        let Event::Deliver { key: recipient, ids, text } = serde_json::from_str(&rx.try_recv().unwrap()).unwrap();
+        assert_eq!(recipient, key);
+        assert_eq!(ids, sent.ids);
+        assert!(text.contains("waiting message") && !text.contains("for a natural pause"));
+        d.handle(9, rename()).await.unwrap();
+        assert!(rx.try_recv().is_err());
+        d.handle(7, Request::Delivered { key: key.into(), ids }).await.unwrap();
+        let inbox = d.inbox(key.into(), 0, false).await.unwrap();
+        assert_eq!(inbox.messages.into_iter().map(|m| m.id).collect::<Vec<_>>(), fyi.ids);
+    }
+
+    #[tokio::test]
     async fn a_claude_session_is_told_delivered_only_through_a_server_that_knows_its_inbox() {
         let d = Arc::new(super::super::test_daemon(crate::config::Config::default()));
         d.register(Some(1), codex("codex:1"), crate::git::GitInfo::default()).unwrap();

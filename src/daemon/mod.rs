@@ -386,7 +386,12 @@ impl Daemon {
             }
             Request::SetStatus { key, doing, name, reclaim } => {
                 let rename = if reclaim { sessions::Rename::Explicit } else { sessions::Rename::Automatic };
-                json!(self.set_status(&key, doing, name, rename)?)
+                let (r, took) = self.set_status_quiet(&key, doing, name, rename)?;
+                if !took.is_empty() {
+                    let mut g = self.inner.lock().unwrap();
+                    self.deliver(&mut g, &key, took, true);
+                }
+                json!(r)
             }
             Request::Who { me, filter, all } => json!(self.who(me, filter, all).await?),
             Request::Send { from, to, body, reply_to, wake, notify, files, purpose, idempotency_key } => {

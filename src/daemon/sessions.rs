@@ -282,6 +282,18 @@ impl Daemon {
         name: Option<String>,
         rename: Rename,
     ) -> Result<Registered> {
+        self.set_status_quiet(key, doing, name, rename).map(|(r, _)| r)
+    }
+
+    /// Also returns reclaimed wake mail for the caller to deliver, as registering does.
+    /// A push session may never check an inbox or run another hook.
+    pub(super) fn set_status_quiet(
+        &self,
+        key: &str,
+        doing: Option<String>,
+        name: Option<String>,
+        rename: Rename,
+    ) -> Result<(Registered, Vec<Message>)> {
         let now = util::now_ms();
         let others = self.my_names_elsewhere(now);
         let mut g = self.inner.lock().unwrap();
@@ -341,14 +353,16 @@ impl Daemon {
         g.store.upsert_session(&remembered(live, now), &self.person)?;
         let address = self.addr(&live.name);
         let name = live.name.clone();
-        let unread = if reclaim {
+        let (unread, took) = if reclaim {
             self.arrived.notify_waiters();
             self.presence_changed();
-            g.pending(&address)?.len() as u32
+            let msgs = g.pending(&address)?;
+            let unread = msgs.len() as u32;
+            (unread, msgs.into_iter().filter(|m| m.wake).collect())
         } else {
-            g.store.unread_count(&address)?
+            (g.store.unread_count(&address)?, Vec::new())
         };
-        Ok(Registered { name, unread, address })
+        Ok((Registered { name, unread, address }, took))
     }
 
     pub(super) fn unread(&self, key: &str) -> Result<Unread> {
