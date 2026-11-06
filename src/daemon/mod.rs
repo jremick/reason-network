@@ -386,10 +386,16 @@ impl Daemon {
             }
             Request::SetStatus { key, doing, name, reclaim } => {
                 let rename = if reclaim { sessions::Rename::Explicit } else { sessions::Rename::Automatic };
-                let (r, took) = self.set_status_quiet(&key, doing, name, rename)?;
-                if !took.is_empty() {
+                let (r, reclaimed) = self.set_status_quiet(&key, doing, name, rename)?;
+                if reclaimed {
                     let mut g = self.inner.lock().unwrap();
-                    self.deliver(&mut g, &key, took, true);
+                    // A hook may have read the mail, or the owner changed, since the rename released the lock.
+                    if g.live.get(&key).is_some_and(|l| l.name == r.name) {
+                        let wake: Vec<_> = g.pending(&r.address)?.into_iter().filter(|m| m.wake).collect();
+                        if !wake.is_empty() {
+                            self.deliver(&mut g, &key, wake, true);
+                        }
+                    }
                 }
                 json!(r)
             }

@@ -1485,8 +1485,11 @@ mod tests {
             let (d, address, ids) = codex_queue_in_flight().await;
             d.register(Some(2), gemini("gemini:new"), crate::git::GitInfo::default()).unwrap();
             let name = address.split_once('/').unwrap().1;
-            let new = d.set_status("gemini:new", None, Some(name.into()), Rename::Explicit).unwrap();
-            assert_eq!((new.address, new.unread), (address, 0));
+            let req =
+                Request::SetStatus { key: "gemini:new".into(), doing: None, name: Some(name.into()), reclaim: true };
+            let new = d.handle(2, req).await.unwrap();
+            assert_eq!(new["address"], address);
+            assert_eq!(new["unread"], 0);
             assert!(d.inbox("gemini:new".into(), 0, false).await.unwrap().messages.is_empty());
             let mut waiting = Box::pin(d.inbox("gemini:new".into(), 10, false));
             assert!(futures_lite::future::poll_once(&mut waiting).await.is_none());
